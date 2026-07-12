@@ -30,6 +30,14 @@ class QwenAnswerConversionTests(unittest.TestCase):
         self.assertEqual(parsed.chronological_order, (4, 2, 1, 3))
         self.assertEqual(parsed.answer, (3, 2, 4, 1))
 
+    def test_parses_direct_answer_without_inversion(self) -> None:
+        parsed = parse_qwen_output(
+            "[3, 2, 4, 1]", output_mode="direct_answer"
+        )
+        self.assertTrue(parsed.success)
+        self.assertEqual(parsed.answer, (3, 2, 4, 1))
+        self.assertEqual(parsed.chronological_order, (4, 2, 1, 3))
+
     def test_invalid_output_exposes_identity_fallback(self) -> None:
         parsed = parse_qwen_output("I cannot determine the order.")
         self.assertFalse(parsed.success)
@@ -65,6 +73,35 @@ class QwenPromptAndSamplingTests(unittest.TestCase):
                 "data/train/ABC123/ABC123_ddd.jpg",
             ],
         )
+
+    def test_v2_prompt_labels_images_first_and_asks_for_direct_answer(self) -> None:
+        sample = Sample(
+            sample_id="ABC123",
+            input_names=(
+                "ABC123_aaa.jpg",
+                "ABC123_bbb.jpg",
+                "ABC123_ccc.jpg",
+                "ABC123_ddd.jpg",
+            ),
+            sentence="First this happens, then that happens.",
+            answer=(3, 2, 4, 1),
+            no_ordering=True,
+        )
+        messages = build_qwen_messages(
+            sample,
+            Path("data/train"),
+            prompt_version="v2_direct_answer",
+        )
+        content = messages[0]["content"]
+        self.assertIsInstance(content, list)
+        assert isinstance(content, list)
+        self.assertEqual(content[0]["type"], "text")
+        self.assertEqual(content[0]["text"], "\nImage 1:\n")
+        self.assertEqual(content[1]["type"], "image")
+        final_prompt = str(content[-1]["text"])
+        self.assertIn("must not be assumed to be chronological", final_prompt)
+        self.assertIn("original chronological position of Image 1", final_prompt)
+        self.assertNotIn("Example:", final_prompt)
 
     def test_random_subset_is_reproducible(self) -> None:
         samples = [

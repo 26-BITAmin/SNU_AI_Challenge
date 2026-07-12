@@ -58,6 +58,7 @@ class SplitResult:
     summary: dict[str, object]
     train_rows: list[dict[str, object]]
     validation_rows: list[dict[str, object]]
+    clean_validation_rows: list[dict[str, object]]
     label_rows: list[dict[str, object]]
     cross_split_hash_rows: list[dict[str, object]]
 
@@ -330,6 +331,30 @@ def _cross_split_pair_distribution(
     return {str(count): distribution[count] for count in sorted(distribution)}
 
 
+def cross_split_affected_sample_ids(
+    duplicate_index: DuplicateIndex,
+    validation_ids: set[str],
+    *,
+    excluded_hashes: set[str] | None = None,
+) -> tuple[set[str], set[str]]:
+    """Return Train and Validation IDs sharing an eligible exact hash."""
+
+    excluded_hashes = excluded_hashes or set()
+    train_ids = set(duplicate_index.sample_hashes) - validation_ids
+    affected_train_ids: set[str] = set()
+    affected_validation_ids: set[str] = set()
+    for sha256, sample_ids in duplicate_index.hash_samples.items():
+        if sha256 in excluded_hashes:
+            continue
+        validation_samples = sample_ids & validation_ids
+        train_samples = sample_ids & train_ids
+        if not validation_samples or not train_samples:
+            continue
+        affected_train_ids.update(train_samples)
+        affected_validation_ids.update(validation_samples)
+    return affected_train_ids, affected_validation_ids
+
+
 def create_train_validation_split(
     *,
     data_dir: Path,
@@ -397,16 +422,34 @@ def create_train_validation_split(
     uniform_cross_rows = [
         row for row in cross_split_hash_rows if bool(row["uniform_candidate"])
     ]
-    affected_train_ids: set[str] = set()
-    affected_validation_ids: set[str] = set()
-    for sha256, sample_ids in duplicate_index.hash_samples.items():
-        if sha256 not in {str(row["sha256"]) for row in cross_split_hash_rows}:
-            continue
-        affected_train_ids.update(sample_ids & train_ids)
-        affected_validation_ids.update(sample_ids & validation_ids)
+    affected_train_ids, affected_validation_ids = cross_split_affected_sample_ids(
+        duplicate_index, validation_ids
+    )
+    (
+        informative_affected_train_ids,
+        informative_affected_validation_ids,
+    ) = cross_split_affected_sample_ids(
+        duplicate_index,
+        validation_ids,
+        excluded_hashes=duplicate_index.uniform_hashes,
+    )
+    clean_validation_ids = validation_ids - informative_affected_validation_ids
+    clean_validation_rows = [
+        row for row in validation_rows if str(row["Id"]) in clean_validation_ids
+    ]
 
     label_max_pp_difference = max(
         abs(float(row["validation_minus_total_pp"])) for row in label_rows
+    )
+    global_label_counts = Counter(labels.values())
+    clean_label_counts = Counter(labels[sample_id] for sample_id in clean_validation_ids)
+    clean_label_max_pp_difference = max(
+        abs(
+            clean_label_counts[label] / len(clean_validation_ids)
+            - global_label_counts[label] / len(labels)
+        )
+        * 100
+        for label in global_label_counts
     )
     multi_sample_components = [component for component in components if len(component) > 1]
     cross_pair_distribution = _cross_split_pair_distribution(
@@ -447,8 +490,28 @@ def create_train_validation_split(
             "uniform_hash_count": len(uniform_cross_rows),
             "affected_train_sample_count": len(affected_train_ids),
             "affected_validation_sample_count": len(affected_validation_ids),
+            "informative_affected_train_sample_count": len(
+                informative_affected_train_ids
+            ),
+            "informative_affected_validation_sample_count": len(
+                informative_affected_validation_ids
+            ),
             "informative_sample_pair_count_by_shared_frame_count": cross_pair_distribution,
             "max_informative_frames_shared_by_cross_split_pair": max_cross_shared_frames,
+        },
+        "clean_validation": {
+            "sample_count": len(clean_validation_rows),
+            "fraction_of_validation": round(
+                len(clean_validation_rows) / len(validation_rows), 8
+            ),
+            "label_class_count": len(clean_label_counts),
+            "max_clean_vs_total_label_difference_pp": round(
+                clean_label_max_pp_difference, 6
+            ),
+            "definition": (
+                "Validation samples sharing no non-uniform exact image hash "
+                "with Train; diagnostic only, not a separate training split"
+            ),
         },
     }
 
@@ -456,6 +519,7 @@ def create_train_validation_split(
         summary=summary,
         train_rows=train_rows,
         validation_rows=validation_rows,
+        clean_validation_rows=clean_validation_rows,
         label_rows=label_rows,
         cross_split_hash_rows=cross_split_hash_rows,
     )
@@ -487,6 +551,11 @@ def write_split_outputs(result: SplitResult, output_dir: Path) -> None:
     _write_csv(output_dir / "train_ids.csv", result.train_rows, split_fields)
     _write_csv(
         output_dir / "validation_ids.csv", result.validation_rows, split_fields
+    )
+    _write_csv(
+        output_dir / "validation_clean_ids.csv",
+        result.clean_validation_rows,
+        split_fields,
     )
     _write_csv(
         output_dir / "label_distribution.csv",

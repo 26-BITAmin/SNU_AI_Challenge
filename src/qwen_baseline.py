@@ -20,6 +20,7 @@ from .metrics import evaluate_predictions
 
 QWEN_MODEL_NAME = "Qwen/Qwen2-VL-2B-Instruct"
 IDENTITY_ANSWER = (1, 2, 3, 4)
+QWEN_PROMPT_VERSIONS = ("v1_chronological", "v2_direct_answer")
 
 
 @dataclass(frozen=True)
@@ -59,8 +60,13 @@ def answer_to_chronological_order(answer: Sequence[int]) -> tuple[int, int, int,
     return tuple(sorted(IDENTITY_ANSWER, key=lambda index: normalized[index - 1]))
 
 
-def parse_qwen_output(output_text: str) -> ParsedQwenOutput:
-    """Parse the official baseline output and expose fallback use explicitly."""
+def parse_qwen_output(
+    output_text: str, *, output_mode: str = "chronological"
+) -> ParsedQwenOutput:
+    """Parse one permutation as chronological order or direct official Answer."""
+
+    if output_mode not in {"chronological", "direct_answer"}:
+        raise ValueError("output_mode must be 'chronological' or 'direct_answer'.")
 
     start_index = output_text.find("[")
     end_index = output_text.rfind("]")
@@ -93,29 +99,60 @@ def parse_qwen_output(output_text: str) -> ParsedQwenOutput:
             success=False,
             error="not_a_permutation",
         )
-    chronological_order = tuple(parsed)
+    parsed_permutation = tuple(parsed)
+    if output_mode == "direct_answer":
+        answer = parsed_permutation
+        chronological_order = answer_to_chronological_order(answer)
+    else:
+        chronological_order = parsed_permutation
+        answer = chronological_order_to_answer(chronological_order)
     return ParsedQwenOutput(
-        answer=chronological_order_to_answer(chronological_order),
+        answer=answer,  # type: ignore[arg-type]
         chronological_order=chronological_order,  # type: ignore[arg-type]
         success=True,
         error=None,
     )
 
 
-def build_qwen_messages(sample: Sample, image_dir: Path) -> list[dict[str, object]]:
-    """Build the same four-image ordering prompt used by the official baseline."""
+def build_qwen_messages(
+    sample: Sample,
+    image_dir: Path,
+    *,
+    prompt_version: str = "v1_chronological",
+) -> list[dict[str, object]]:
+    """Build a versioned four-image ordering prompt."""
+
+    if prompt_version not in QWEN_PROMPT_VERSIONS:
+        raise ValueError(
+            f"prompt_version must be one of {QWEN_PROMPT_VERSIONS!r}."
+        )
 
     content: list[dict[str, object]] = []
-    for index, image_path in enumerate(sample.image_paths(image_dir), start=1):
-        content.append({"type": "image", "image": str(image_path)})
-        content.append({"type": "text", "text": f"\nImage {index}\n"})
-    user_text = (
-        f'Thinking about the sentence: "{sample.sentence}"\n'
-        "Look at the 4 images above labeled Image 1 to Image 4. "
-        "Determine the correct chronological order of these images to match the sentence. "
-        "Provide the answer ONLY as a Python list of integers. "
-        "Example: [1, 2, 3, 4]"
-    )
+    if prompt_version == "v1_chronological":
+        for index, image_path in enumerate(sample.image_paths(image_dir), start=1):
+            content.append({"type": "image", "image": str(image_path)})
+            content.append({"type": "text", "text": f"\nImage {index}\n"})
+        user_text = (
+            f'Thinking about the sentence: "{sample.sentence}"\n'
+            "Look at the 4 images above labeled Image 1 to Image 4. "
+            "Determine the correct chronological order of these images to match the sentence. "
+            "Provide the answer ONLY as a Python list of integers. "
+            "Example: [1, 2, 3, 4]"
+        )
+    else:
+        for index, image_path in enumerate(sample.image_paths(image_dir), start=1):
+            content.append({"type": "text", "text": f"\nImage {index}:\n"})
+            content.append({"type": "image", "image": str(image_path)})
+        user_text = (
+            f'The sentence describing the temporal sequence is: "{sample.sentence}"\n'
+            "The displayed image order is shuffled and must not be assumed to be chronological. "
+            "Compare the action state, body pose, and object position across all four images "
+            "with the sequence described by the sentence. "
+            "Return the original chronological position of Image 1, Image 2, Image 3, "
+            "and Image 4 in that exact input order. Position 1 is earliest and position 4 "
+            "is latest. Use each integer from 1 through 4 exactly once. "
+            "Output only the four-integer Python list with no explanation."
+        )
     content.append({"type": "text", "text": user_text})
     return [{"role": "user", "content": content}]
 

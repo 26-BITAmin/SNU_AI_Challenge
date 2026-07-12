@@ -14,6 +14,7 @@ from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
 
 from src.qwen_baseline import (
     QWEN_MODEL_NAME,
+    QWEN_PROMPT_VERSIONS,
     build_qwen_messages,
     choose_evaluation_samples,
     load_validation_samples,
@@ -38,6 +39,11 @@ def parse_args() -> argparse.Namespace:
         "--output-dir", type=Path, default=Path("outputs/qwen_zero_shot")
     )
     parser.add_argument("--model-name", default=QWEN_MODEL_NAME)
+    parser.add_argument(
+        "--prompt-version",
+        choices=QWEN_PROMPT_VERSIONS,
+        default="v1_chronological",
+    )
     parser.add_argument(
         "--cache-dir", type=Path, default=Path(".cache/huggingface/hub")
     )
@@ -135,7 +141,11 @@ def main() -> None:
             raise ValueError(f"Validation sample {sample.sample_id!r} has no Answer.")
         synchronize(device)
         started_at = time.perf_counter()
-        messages = build_qwen_messages(sample, data_dir / "train")
+        messages = build_qwen_messages(
+            sample,
+            data_dir / "train",
+            prompt_version=args.prompt_version,
+        )
         prompt_text = processor.apply_chat_template(  # type: ignore[attr-defined]
             messages,
             tokenize=False,
@@ -169,7 +179,12 @@ def main() -> None:
             skip_special_tokens=True,
             clean_up_tokenization_spaces=False,
         )[0]
-        parsed = parse_qwen_output(raw_output)
+        output_mode = (
+            "direct_answer"
+            if args.prompt_version == "v2_direct_answer"
+            else "chronological"
+        )
+        parsed = parse_qwen_output(raw_output, output_mode=output_mode)
 
         targets.append(sample.answer)
         predictions.append(parsed.answer)
@@ -214,6 +229,8 @@ def main() -> None:
         "name": args.model_name,
         "max_new_tokens": args.max_new_tokens,
         "device": str(device),
+        "prompt_version": args.prompt_version,
+        "output_mode": output_mode,
     }
     write_qwen_predictions(output_dir / "predictions.csv", output_rows)
     with (output_dir / "summary.json").open("w", encoding="utf-8") as handle:

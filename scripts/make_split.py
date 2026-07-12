@@ -46,9 +46,11 @@ def main() -> None:
     split = result.summary["split"]
     components = result.summary["duplicate_components"]
     overlap = result.summary["cross_split_exact_overlap"]
+    clean_validation = result.summary["clean_validation"]
     assert isinstance(split, dict)
     assert isinstance(components, dict)
     assert isinstance(overlap, dict)
+    assert isinstance(clean_validation, dict)
     print("Train/Validation split created.")
     print(f"train: {split['train_count']:,}")
     print(f"validation: {split['validation_count']:,}")
@@ -64,6 +66,10 @@ def main() -> None:
     print(
         "max informative frames shared across split: "
         f"{overlap['max_informative_frames_shared_by_cross_split_pair']}"
+    )
+    print(
+        "clean validation samples: "
+        f"{clean_validation['sample_count']:,}/{split['validation_count']:,}"
     )
     print(f"outputs: {output_dir}")
 

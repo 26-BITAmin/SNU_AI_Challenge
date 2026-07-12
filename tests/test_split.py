@@ -3,9 +3,11 @@ from __future__ import annotations
 import unittest
 
 from src.split import (
+    DuplicateIndex,
     assign_components_to_validation,
     build_duplicate_components,
     count_shared_hashes,
+    cross_split_affected_sample_ids,
 )
 
 
@@ -61,6 +63,34 @@ class DuplicateComponentTests(unittest.TestCase):
         self.assertEqual(first, second)
         self.assertEqual(len(first), 3)
         self.assertEqual("A" in first, "B" in first)
+
+    def test_clean_validation_excludes_only_informative_cross_split_hashes(self) -> None:
+        duplicate_index = DuplicateIndex(
+            sample_hashes={
+                "T1": {"shared", "blank"},
+                "T2": {"train_only"},
+                "V1": {"shared"},
+                "V2": {"blank"},
+                "V3": {"validation_only"},
+            },
+            hash_samples={
+                "shared": {"T1", "V1"},
+                "blank": {"T1", "V2"},
+                "train_only": {"T2"},
+                "validation_only": {"V3"},
+            },
+            hash_metadata={},
+            uniform_hashes={"blank"},
+        )
+
+        affected_train, affected_validation = cross_split_affected_sample_ids(
+            duplicate_index,
+            {"V1", "V2", "V3"},
+            excluded_hashes=duplicate_index.uniform_hashes,
+        )
+
+        self.assertEqual(affected_train, {"T1"})
+        self.assertEqual(affected_validation, {"V1"})
 
 
 if __name__ == "__main__":
