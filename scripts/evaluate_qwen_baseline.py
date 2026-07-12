@@ -40,6 +40,12 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--model-name", default=QWEN_MODEL_NAME)
     parser.add_argument(
+        "--adapter-path",
+        type=Path,
+        default=None,
+        help="Optional PEFT/LoRA adapter produced by train_qwen_lora.",
+    )
+    parser.add_argument(
         "--prompt-version",
         choices=QWEN_PROMPT_VERSIONS,
         default="v1_chronological",
@@ -79,6 +85,7 @@ def load_model_and_processor(
     device: torch.device,
     dtype: torch.dtype,
     local_files_only: bool,
+    adapter_path: Path | None = None,
 ) -> tuple[PreTrainedModel, object]:
     if device.type == "cuda":
         model = AutoModelForImageTextToText.from_pretrained(
@@ -97,6 +104,16 @@ def load_model_and_processor(
             local_files_only=local_files_only,
             low_cpu_mem_usage=True,
         ).to(device)
+    if adapter_path is not None:
+        if not adapter_path.is_dir():
+            raise FileNotFoundError(f"LoRA adapter directory not found: {adapter_path}")
+        from peft import PeftModel
+
+        model = PeftModel.from_pretrained(
+            model,
+            str(adapter_path),
+            is_trainable=False,
+        )
     model.eval()
     processor = AutoProcessor.from_pretrained(
         model_name,
@@ -132,6 +149,7 @@ def main() -> None:
     data_dir = args.data_dir.resolve()
     validation_split_csv = args.validation_split_csv.resolve()
     cache_dir = args.cache_dir.resolve()
+    adapter_path = args.adapter_path.resolve() if args.adapter_path else None
     run_name = "validation_full" if args.limit == 0 else f"validation_{args.limit}"
     output_dir = args.output_dir.resolve() / run_name
     output_dir.mkdir(parents=True, exist_ok=True)
@@ -139,6 +157,7 @@ def main() -> None:
     print("Scope: TRAIN VALIDATION ONLY (Test data is not opened or analyzed).")
     print(f"device: {device}")
     print(f"model: {args.model_name}")
+    print(f"adapter: {adapter_path or 'none (zero-shot base model)'}")
     print(f"dtype: {dtype}")
     all_validation_samples = load_validation_samples(
         data_dir=data_dir,
@@ -157,6 +176,7 @@ def main() -> None:
         device=device,
         dtype=dtype,
         local_files_only=args.local_files_only,
+        adapter_path=adapter_path,
     )
     targets: list[tuple[int, int, int, int]] = []
     predictions: list[tuple[int, int, int, int]] = []
@@ -262,6 +282,7 @@ def main() -> None:
         "dtype": str(dtype),
         "prompt_version": args.prompt_version,
         "output_mode": output_mode,
+        "adapter_path": str(adapter_path) if adapter_path is not None else None,
     }
     write_qwen_predictions(output_dir / "predictions.csv", output_rows)
     with (output_dir / "summary.json").open("w", encoding="utf-8") as handle:
