@@ -10,7 +10,7 @@ from pathlib import Path
 import torch
 from qwen_vl_utils import process_vision_info
 from tqdm.auto import tqdm
-from transformers import AutoProcessor, Qwen2VLForConditionalGeneration
+from transformers import AutoModelForImageTextToText, AutoProcessor, PreTrainedModel
 
 from src.qwen_baseline import (
     QWEN_MODEL_NAME,
@@ -55,6 +55,11 @@ def parse_args() -> argparse.Namespace:
     )
     parser.add_argument("--seed", type=int, default=42)
     parser.add_argument("--device", default="auto")
+    parser.add_argument(
+        "--dtype",
+        choices=("auto", "bfloat16", "float16", "float32"),
+        default="auto",
+    )
     parser.add_argument("--max-new-tokens", type=int, default=32)
     parser.add_argument("--local-files-only", action="store_true")
     return parser.parse_args()
@@ -68,22 +73,29 @@ def synchronize(device: torch.device) -> None:
 
 
 def load_model_and_processor(
-    *, model_name: str, cache_dir: Path, device: torch.device, local_files_only: bool
-) -> tuple[Qwen2VLForConditionalGeneration, object]:
+    *,
+    model_name: str,
+    cache_dir: Path,
+    device: torch.device,
+    dtype: torch.dtype,
+    local_files_only: bool,
+) -> tuple[PreTrainedModel, object]:
     if device.type == "cuda":
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model = AutoModelForImageTextToText.from_pretrained(
             model_name,
-            dtype=torch.float16,
+            dtype=dtype,
             device_map="auto",
             cache_dir=cache_dir,
             local_files_only=local_files_only,
+            low_cpu_mem_usage=True,
         )
     else:
-        model = Qwen2VLForConditionalGeneration.from_pretrained(
+        model = AutoModelForImageTextToText.from_pretrained(
             model_name,
-            dtype=torch.float32,
+            dtype=dtype,
             cache_dir=cache_dir,
             local_files_only=local_files_only,
+            low_cpu_mem_usage=True,
         ).to(device)
     model.eval()
     processor = AutoProcessor.from_pretrained(
@@ -94,6 +106,21 @@ def load_model_and_processor(
     return model, processor
 
 
+def resolve_dtype(requested: str, device: torch.device) -> torch.dtype:
+    """Choose a supported inference dtype explicitly and reproducibly."""
+
+    mapping = {
+        "bfloat16": torch.bfloat16,
+        "float16": torch.float16,
+        "float32": torch.float32,
+    }
+    if requested != "auto":
+        return mapping[requested]
+    if device.type == "cuda":
+        return torch.bfloat16 if torch.cuda.is_bf16_supported() else torch.float16
+    return torch.float32
+
+
 def main() -> None:
     args = parse_args()
     if args.limit < 0:
@@ -101,6 +128,7 @@ def main() -> None:
     if args.max_new_tokens <= 0:
         raise ValueError("max_new_tokens must be positive.")
     device = select_device(args.device)
+    dtype = resolve_dtype(args.dtype, device)
     data_dir = args.data_dir.resolve()
     validation_split_csv = args.validation_split_csv.resolve()
     cache_dir = args.cache_dir.resolve()
@@ -111,6 +139,7 @@ def main() -> None:
     print("Scope: TRAIN VALIDATION ONLY (Test data is not opened or analyzed).")
     print(f"device: {device}")
     print(f"model: {args.model_name}")
+    print(f"dtype: {dtype}")
     all_validation_samples = load_validation_samples(
         data_dir=data_dir,
         validation_split_csv=validation_split_csv,
@@ -126,6 +155,7 @@ def main() -> None:
         model_name=args.model_name,
         cache_dir=cache_dir,
         device=device,
+        dtype=dtype,
         local_files_only=args.local_files_only,
     )
     targets: list[tuple[int, int, int, int]] = []
@@ -229,6 +259,7 @@ def main() -> None:
         "name": args.model_name,
         "max_new_tokens": args.max_new_tokens,
         "device": str(device),
+        "dtype": str(dtype),
         "prompt_version": args.prompt_version,
         "output_mode": output_mode,
     }
