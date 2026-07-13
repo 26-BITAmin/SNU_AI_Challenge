@@ -33,3 +33,6 @@ logs/
 
 # Cache
 .cache/
+
+# 진행 상황 기록
+PROJECT_PROGRESS.md
